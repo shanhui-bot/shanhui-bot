@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>小闪的生命游戏</title>
+<style>
+  html,body{margin:0;height:100%;background:#0b1220;color:#cfe6ff;
+            font:13px/1.5 -apple-system,"Segoe UI",system-ui,sans-serif;
+            display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px}
+  canvas{background:#0e1729;border-radius:10px;box-shadow:0 0 0 1px #1e3355, 0 12px 40px #0006}
+  #bar,#bar2{display:flex;gap:16px;align-items:center;opacity:.9;font-variant-numeric:tabular-nums}
+  b{color:#7fd4ff;font-weight:600}
+  button,select{background:#16243d;color:#cfe6ff;border:1px solid #27405f;border-radius:7px;
+         padding:4px 11px;cursor:pointer;font:inherit}
+  button:hover{background:#1d3050}
+  #note{opacity:.55;font-size:12px;max-width:720px;text-align:center}
+</style>
+</head>
+<body>
+<canvas id="c" width="780" height="780"></canvas>
+<div id="bar">
+  <span>第 <b id="gen">0</b> 代</span>
+  <span><b id="pop">0</b> 个活着</span>
+  <span><b id="gps">—</b> 代/秒</span>
+  <button id="reset">重开</button>
+  <button id="clear">清空</button>
+  <button id="pause">暂停</button>
+</div>
+<div id="bar2">
+  <span>规则</span>
+  <select id="rule"></select>
+  <span id="note2" style="opacity:.5">（在画布上点/拖，可以自己画格子）</span>
+</div>
+<div id="note"></div>
+<script>
+const N = 130, CELL = 6;
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+let grid = new Uint8Array(N*N), next = new Uint8Array(N*N);
+let gen = 0, B = new Set([3]), S = new Set([2,3]);
+
+const RULES = {
+  'B3/S23':  { label:'生命 (Conway)',  note:'最经典的一条。稳定、克制，偶尔吐出滑翔机。' },
+  'B36/S23': { label:'HighLife',       note:'只多了一条：六个邻居也出生。于是有了能自我复制的东西。' },
+  'B2/S':    { label:'Seeds（种子）',  note:'除了两个邻居就出生，什么都不存活。像火。' },
+};
+
+const idx = (x,y)=> (y+N)%N*N + (x+N)%N;   // 环面：边缘从对面绕回来
+
+/* ---------- 图案 ---------- */
+
+// HighLife 复制器 · Nathan Thompson 1994
+// RLE: bb3o$bobbo$o3bo$obbo$3o!   (x=5, y=5, rule=B36/S23)
+// ..ooo
+// .o..o
+// o...o
+// o..o.
+// ooo..
+const REPLICATOR = ['..ooo', '.o..o', 'o...o', 'o..o.', 'ooo..'];
+
+const GLIDER = [[1,0],[2,1],[0,2],[1,2],[2,2]];
+
+const PULSAR = [[2,0],[3,0],[4,0],[8,0],[9,0],[10,0],
+                [0,2],[5,2],[7,2],[12,2],[0,3],[5,3],[7,3],[12,3],[0,4],[5,4],[7,4],[12,4],
+                [2,5],[3,5],[4,5],[8,5],[9,5],[10,5]];
+
+const GUN = [[0,4],[0,5],[1,4],[1,5],
+             [10,4],[10,5],[10,6],[11,3],[11,7],[12,2],[12,8],[13,2],[13,8],
+             [14,5],[15,3],[15,7],[16,4],[16,5],[16,6],[17,5],
+             [20,2],[20,3],[20,4],[21,2],[21,3],[21,4],[22,1],[22,5],[24,0],[24,1],[24,5],[24,6],
+             [34,2],[34,3],[35,2],[35,3]];
+
+function seed(){
+  grid.fill(0);
+  const put=(x,y)=>{ grid[idx(x,y)] = 1; };
+  const putRows=(rows, ox, oy)=>{
+    rows.forEach((row, y) => [...row].forEach((ch, x) => { if(ch === 'o') put(ox+x, oy+y); }));
+  };
+
+  if (currentRule() === 'B36/S23') {
+    // 只放一个复制器。它应该每 12 代沿对角线复制出下一个。
+    putRows(REPLICATOR, 12, 12);
+  } else if (currentRule() === 'B2/S') {
+    for(let y=50;y<80;y++) for(let x=50;x<80;x++) if(Math.random()<0.18) put(x,y);
+  } else {
+    for(const [ox,oy] of [[8,8],[60,20],[100,90]])
+      for(const [dx,dy] of GLIDER) put(ox+dx, oy+dy);
+    for(const [dx,dy] of PULSAR) put(40+dx, 38+dy);
+    for(const [dx,dy] of GUN) put(24+dx, 100+dy);
+    for(let y=95;y<125;y++) for(let x=95;x<125;x++) if(Math.random()<0.33) put(x,y);
+  }
+  gen = 0;
+}
+
+/* ---------- 演化 ---------- */
+
+function step(){
+  for(let y=0;y<N;y++) for(let x=0;x<N;x++){
+    const n = grid[idx(x-1,y-1)]+grid[idx(x,y-1)]+grid[idx(x+1,y-1)]
+            + grid[idx(x-1,y  )]                  +grid[idx(x+1,y  )]
+            + grid[idx(x-1,y+1)]+grid[idx(x,y+1)]+grid[idx(x+1,y+1)];
+    const a = grid[idx(x,y)];
+    next[idx(x,y)] = (a ? S.has(n) : B.has(n)) ? 1 : 0;
+  }
+  [grid,next] = [next,grid];
+  gen++;
+}
+
+function draw(){
+  ctx.clearRect(0,0,cv.width,cv.height);
+  let pop = 0;
+  for(let y=0;y<N;y++) for(let x=0;x<N;x++){
+    if(!grid[idx(x,y)]) continue;
+    pop++;
+    const t = x/N;
+    ctx.fillStyle = `hsl(${190 + t*45}, 90%, ${58 + (y/N)*10}%)`;
+    ctx.fillRect(x*CELL, y*CELL, CELL-1, CELL-1);
+  }
+  document.getElementById('gen').textContent = gen;
+  document.getElementById('pop').textContent = pop;
+}
+
+/* ---------- 按墙钟补帧 ----------
+   Chrome 会把后台标签页的定时器压到 1 次/秒。
+   所以不用固定的 setTimeout，而是看真实流逝了多少时间，补上该走的代数。 */
+const GEN_PER_SEC = 20;
+let acc = 0, prev = performance.now(), gensAtMark = 0, genT = prev;
+function loop(now){
+  const dt = Math.min((now - prev) / 1000, 2);   // 封顶，免得切回来时疯狂补算
+  prev = now;
+  acc += dt * GEN_PER_SEC;
+  let n = Math.floor(acc); acc -= n;
+  if (paused) { acc = 0; n = 0; }
+  while (n-- > 0) step();
+  draw();
+  if (now - genT > 1000) {
+    document.getElementById('gps').textContent = Math.round((gen - gensAtMark) * 1000 / (now - genT));
+    gensAtMark = gen; genT = now;
+  }
+  requestAnimationFrame(loop);
+}
+
+/* ---------- 挡板 ---------- */
+
+const sel = document.getElementById('rule');
+Object.entries(RULES).forEach(([k,v])=>{
+  const o = document.createElement('option'); o.value = k; o.textContent = k + '  ' + v.label; sel.appendChild(o);
+});
+sel.value = 'B3/S23';
+function currentRule(){ return sel.value; }
+function applyRule(){
+  [B,S] = currentRule().split('/').map(s=>new Set([...s.slice(1)].map(Number)));
+  document.getElementById('note').textContent = RULES[currentRule()].note;
+  seed(); draw();
+}
+sel.onchange = applyRule;
+document.getElementById('reset').onclick = ()=>{ seed(); draw(); };
+document.getElementById('clear').onclick = ()=>{ grid.fill(0); gen = 0; draw(); };
+
+/* ---------- 手画 ---------- */
+
+let paused = false, painting = false, paintTo = 1;
+document.getElementById('pause').onclick = (e)=>{
+  paused = !paused;
+  e.target.textContent = paused ? '继续' : '暂停';
+};
+
+function cellAt(ev){
+  const r = cv.getBoundingClientRect();
+  const x = Math.floor((ev.clientX - r.left) * (cv.width / r.width) / CELL);
+  const y = Math.floor((ev.clientY - r.top) * (cv.height / r.height) / CELL);
+  return (x >= 0 && x < N && y >= 0 && y < N) ? [x, y] : null;
+}
+function paint(ev){
+  const p = cellAt(ev);
+  if (!p) return;
+  grid[idx(p[0], p[1])] = paintTo;
+  draw();
+}
+cv.addEventListener('mousedown', (ev)=>{
+  const p = cellAt(ev);
+  if (!p) return;
+  painting = true;
+  paintTo = grid[idx(p[0], p[1])] ? 0 : 1;   // 起点决定这一笔是画还是擦
+  paint(ev);
+  ev.preventDefault();
+});
+cv.addEventListener('mousemove', (ev)=>{ if (painting) paint(ev); });
+window.addEventListener('mouseup', ()=>{ painting = false; });
+
+applyRule();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
